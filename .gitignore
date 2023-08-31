@@ -1,0 +1,4 @@
+*.o
+appl
+out.txt
+.vscode/
