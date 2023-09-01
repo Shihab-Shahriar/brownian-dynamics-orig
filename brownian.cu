@@ -1,12 +1,11 @@
 #include <iostream>
 #include <cmath>
-#include <SFML/Graphics.hpp>
 #include <sstream>
+#include <vector>
 #include <curand_kernel.h>
 #include <thrust/device_ptr.h>
 #include <thrust/sort.h>
 #include <cuda_runtime.h>
-#include <vector>
 
 #define DEVICE __host__ __device__
 
@@ -28,7 +27,7 @@ typedef curandStatePhilox4_32_10_t RNG;
 
 // Radius of particles
 const double RADIUS = 2.0;
-const int N = 100; // Number of particles
+const int N = 1000000; // Number of particles
 
 // Parameters for Lennard-Jones potential
 const double epsilon = 1.0; // Depth of potential well
@@ -39,6 +38,7 @@ const double dt = 0.01; // Time step
 const double T = 1.0; // Temperature
 const double GAMMA = 1.0; // Drag coefficient
 const double mass = 1.0; // Mass of particles
+const int steps = 10000; // Number of simulation steps
 
 //Sim Box parameters
 const int windowWidth = 800;
@@ -46,14 +46,12 @@ const int windowHeight = 600;
 const int cell_max_x = ((double)windowWidth + cutoff_distance - 1.0f) / cutoff_distance;
 const int cell_max_y = ((double)windowHeight + cutoff_distance - 1.0f) / cutoff_distance;
 
-const sf::Color colors[4] = {sf::Color::Green, sf::Color::Red, sf::Color::Blue, sf::Color::Yellow};
 
 struct Particle {
     double x = 0;
     double y = 0;
     double vx = 0;
     double vy = 0;
-    int col = 0;
 
     int cell_id;
 
@@ -98,7 +96,6 @@ __global__ void init_particles(Particle *particles, RNG * rand_state){
         return;
 
     Particle p = particles[i];
-    p.col = i % 4;
     RNG local_rand_state = rand_state[i];
     auto x = curand_uniform(&local_rand_state) * float(windowWidth) - 1.0f;
     auto y = curand_uniform(&local_rand_state) * float(windowHeight) - 1.0f;
@@ -238,53 +235,10 @@ __global__ void update_positions(Particle *particles){
 
 }
 
-std::tuple<double, double, double, double>
-find_extreme_positions(Particle* particles){
-    double min_x = std::numeric_limits<double>::max();
-    double max_x = std::numeric_limits<double>::min();
-    double min_y = std::numeric_limits<double>::max();
-    double max_y = std::numeric_limits<double>::min();;
-    for(int i=0; i<N; i++){
-        Particle p = particles[i];
-        if(p.x < min_x)
-            min_x = p.x;
-        if(p.x > max_x)
-            max_x = p.x;
-        if(p.y < min_y)
-            min_y = p.y;
-        if(p.y > max_y)
-            max_y = p.y;
-    }
-    return std::make_tuple(min_x, max_x, min_y, max_y);
-}
-
-std::tuple<double, double>
-find_velocity_magn(Particle* particles){
-    double min_v = std::numeric_limits<double>::max();
-    double max_v = std::numeric_limits<double>::min();
-    for(int i=0; i<N; i++){
-        Particle p = particles[i];
-        double v = std::sqrt(p.vx * p.vx + p.vy * p.vy);
-        if(v < min_v)
-            min_v = v;
-        if(v > max_v)
-            max_v = v;
-    }
-    return std::make_tuple(min_v, max_v);
-}
-
-void get_all_velocity_magnitudes(Particle* particles, std::vector<double>& vels){
-    for(int i=0; i<N; i++){
-        Particle p = particles[i];
-        double v = std::sqrt(p.vx * p.vx + p.vy * p.vy);
-        vels[i] = v;
-    }
-}
 
 
 int main(){
     const double sqrt_dt = std::sqrt(2.0 * T * GAMMA / mass * dt); // Standard deviation for random force
-    std::cout<< "sqrt_dt: "<<sqrt_dt<<std::endl;
 
     // Random number generator setup
     RNG *d_rand_states;
@@ -310,136 +264,28 @@ int main(){
     checkCudaErrors(cudaGetLastError());
     checkCudaErrors(cudaDeviceSynchronize());
 
-    // output initial positions
-    // std::cout << "Initial positions:\n";
-    // for (int i=0; i<N; i++) {
-    //     std::cout << "Particle " << i << ": " << particles[i].x << ", " << particles[i].y << "\n";
-    // }
-
-    // Set up SFML window
-    sf::RenderWindow window(sf::VideoMode(windowWidth, windowHeight), "Brownian Dynamics Simulation");
-    window.setFramerateLimit(120);
-
-    sf::Font font;
-    if (!font.loadFromFile("/usr/share/fonts/truetype/ubuntu/Ubuntu-M.ttf")) {
-        // handle error
-    }
-
-    sf::Text fpsText;
-    fpsText.setFont(font);
-    fpsText.setCharacterSize(24); // in pixels
-    fpsText.setFillColor(sf::Color::White);
-    fpsText.setPosition(10.f, 10.f);
-
-    sf::Clock clock;
-
-    // Array of shapes for each particle
-    sf::CircleShape shapes[N];
-    for (int i=0; i<N; i++) {
-        shapes[i].setRadius(RADIUS);
-        shapes[i].setPosition(particles[i].x, particles[i].y);
-    }
-
-    bool isRunning = true;
-    std::vector<double> vels_prev(N);
-    std::vector<double> vels_curr(N);
 
     // Simulation loop
     int iter = 0;
-    while (window.isOpen()) {
-        iter++;
-        sf::Event event;
-        while (window.pollEvent(event)) {
-            if (event.type == sf::Event::Closed) window.close();
-
-            if (event.type == sf::Event::KeyPressed) {
-                if (event.key.code == sf::Keyboard::Q) {
-                    isRunning = false;
-                    std::cout << "Simulation Paused. Press 'R' to resume." << std::endl;
-
-                    auto [min_x, max_x, min_y, max_y] = find_extreme_positions(particles);
-                    std::cout << min_x<<", "<<max_x<<", "<<min_y<<", "<<max_y<<std::endl;
-
-                    auto [min_v, max_v] = find_velocity_magn(particles);
-                    std::cout << min_v<<", "<<max_v<<std::endl;
-
-                    vels_prev = vels_curr;
-                    get_all_velocity_magnitudes(particles, vels_curr);
-                    //print all force magnitudes in last time step
-                    for(int i=0; i<N; i++){
-                        double force = (vels_curr[i] - vels_prev[i])  / dt;
-                        std::cout<<force<<", ";
-                    }
-                    std::cout<<std::endl;
-
-                } else if (event.key.code == sf::Keyboard::R) {
-                    isRunning = true;
-                    std::cout << "Simulation Resumed." << std::endl;
-                }
-            }
-        }
-
-
-        if(!isRunning)
-            continue;
-
-        get_all_velocity_magnitudes(particles, vels_curr);
-
-
-        // Measure time elapsed since last frame
-        sf::Time elapsed = clock.restart();
-        float fps = 1.f / elapsed.asSeconds();
-        // Update FPS text
-        std::stringstream ss;
-        ss << "Iter: "<< iter<<", FPS: " << fps;
-        fpsText.setString(ss.str());
-
-        if(iter % 1 == 0){ //hoombd-blue does it every 9th step
+    while(iter++ < steps){
+        if(iter % 9 == 0){ //hoombd-blue does it every 9th step
             rebuild_cell_list(particles, cell_list_idx, nblocks, nthreads);
         }
 
         // Compute forces
-        vels_prev = vels_curr;
         collision<<<nblocks, nthreads>>>(particles, cell_list_idx);
         checkCudaErrors(cudaGetLastError());
         checkCudaErrors(cudaDeviceSynchronize());
-        printf("Change after Collision:\n");
-        get_all_velocity_magnitudes(particles, vels_curr);
-        for(int i=0; i<N; i++){
-            double force = (vels_curr[i] - vels_prev[i])  / dt;
-            std::cout<<force<<", ";
-        }
-        std::cout<<std::endl;
 
         apply_forces<<<nblocks, nthreads>>>(particles, d_rand_states, sqrt_dt);
         checkCudaErrors(cudaGetLastError());
         checkCudaErrors(cudaDeviceSynchronize());
-        vels_prev = vels_curr;
-        get_all_velocity_magnitudes(particles, vels_curr);
-        printf("Change after Forces:\n");
-        for(int i=0; i<N; i++){
-            double force = (vels_curr[i] - vels_prev[i])  / dt;
-            std::cout<<force<<", ";
-        }
-        std::cout<<std::endl<<std::endl;
         
         update_positions<<<nblocks, nthreads>>>(particles);
         checkCudaErrors(cudaGetLastError());
         checkCudaErrors(cudaDeviceSynchronize());
-
-
-        // Draw particles
-        window.clear();
-        for (int i=0; i<N; i++) {
-            Particle particle = particles[i];
-            shapes[i].setPosition(particle.x, particle.y);
-            shapes[i].setFillColor(colors[particle.col]);
-            window.draw(shapes[i]);
-        }
-        window.draw(fpsText);
-        window.display();
     }
-    
+
 }
 
 
