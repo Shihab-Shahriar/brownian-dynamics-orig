@@ -1,8 +1,8 @@
 # Compiler
-CXX = g++
+CXX = nvcc
 
 # Compiler Flags
-CXXFLAGS = -Wall -O1 -g
+CXXFLAGS = -Xcompiler -Wall -O3
 
 # SFML include directory
 INCLUDES = 
@@ -19,10 +19,10 @@ LDFLAGS = -lsfml-graphics -lsfml-window -lsfml-system
 TARGET = appl
 
 # Source files
-SOURCES = brownian.cpp
+SOURCES = brownian.cu
 
 # Object files
-OBJECTS = $(SOURCES:.cpp=.o)
+OBJECTS = $(SOURCES:.cu=.o)
 
 all: $(TARGET)
 
@@ -33,4 +33,4 @@ $(TARGET): $(OBJECTS)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
 clean:
-	rm -f $(OBJECTS) $(TARGET) out.txt
+	rm -f $(OBJECTS) $(TARGET) out.txt a.out

@@ -1,11 +1,11 @@
 #include <iostream>
-#include <random>
 #include <cmath>
-#include <vector>
 #include <SFML/Graphics.hpp>
 #include <sstream>
 #include <curand_kernel.h>
-
+#include <thrust/device_ptr.h>
+#include <thrust/sort.h>
+#include <cuda_runtime.h>
 
 #define DEVICE __host__ __device__
 
@@ -35,7 +35,7 @@ const double sigma = 2 * RADIUS;  // Finite distance at which the inter-particle
 const double cutoff_distance = 2.5 * sigma;
 
 const double dt = 0.05; // Time step
-const double T = 9.0; // Temperature
+const double T = 36.0; // Temperature
 const double GAMMA = 1.0; // Drag coefficient
 const double mass = 1.0; // Mass of particles
 const int steps = 10000; // Number of simulation steps
@@ -43,6 +43,8 @@ const int steps = 10000; // Number of simulation steps
 //Sim Box parameters
 const int windowWidth = 800;
 const int windowHeight = 600;
+const int cell_max_x = ((double)windowWidth + cutoff_distance - 1.0f) / cutoff_distance;
+const int cell_max_y = ((double)windowHeight + cutoff_distance - 1.0f) / cutoff_distance;
 
 const sf::Color colors[4] = {sf::Color::Green, sf::Color::Red, sf::Color::Blue, sf::Color::Yellow};
 
@@ -52,13 +54,10 @@ struct Particle {
     double vx = 0;
     double vy = 0;
 
-    sf::CircleShape shape;
+    int cell_id;
 
-
-    DEVICE Particle(float x, float y, const sf::Color col) : x(x), y(y) {
-        shape.setRadius(RADIUS);
-        shape.setPosition(x, y);
-        shape.setFillColor(col);
+    DEVICE Particle(float x, float y, const sf::Color col) : x(x), y(y) 
+    {
 
     }
 
@@ -74,12 +73,11 @@ struct Particle {
             y = 0;
         else if(y > windowHeight)
             y = windowHeight;
-        shape.setPosition(x, y);
     }
 
 };
 
-__global__ void render_init(RNG *rand_state) {
+__global__ void rand_init(RNG *rand_state) {
     int i = threadIdx.x + blockIdx.x * blockDim.x;
     if(i >= N) 
         return;
@@ -89,6 +87,57 @@ __global__ void render_init(RNG *rand_state) {
     curand_init(1984, i, 0, &rand_state[i]);
 }
 
+__global__ void init_particles(Particle *particles, RNG * rand_state){
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if(i >= N)
+        return;
+
+    Particle p = particles[i];
+    RNG local_rand_state = rand_state[i];
+    auto x = curand_uniform(&local_rand_state) * float(windowWidth) - 1.0f;
+    auto y = curand_uniform(&local_rand_state) * float(windowHeight) - 1.0f;
+    p.update(x, y);
+    rand_state[i] = local_rand_state;
+    particles[i] = p;
+}
+
+__global__ void assign_cells(Particle *particles ){
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if(i >= N)
+        return;
+
+    int cell_x = particles[i].x / cutoff_distance;
+    int cell_y = particles[i].y / cutoff_distance;
+
+    particles[i].cell_id = cell_x * cell_max_y + cell_y;
+}
+
+struct ParticleComparator{
+    DEVICE bool operator()(const Particle& p1, const Particle& p2) const {
+        return p1.cell_id < p2.cell_id;
+    }
+};
+
+void rebuild_cell_list(Particle* particles, int *cell_list_idx, int nblocks, int nthreads){
+    assign_cells<<<nblocks, nthreads>>>(particles);
+    checkCudaErrors(cudaGetLastError());
+    checkCudaErrors(cudaDeviceSynchronize());
+
+    thrust::device_ptr<Particle> dev_ptr(particles);
+    thrust::sort(dev_ptr, dev_ptr + N, ParticleComparator());
+
+    // Find cell boundaries
+    cell_list_idx[0] = 0;
+    int max_cell_id = cell_max_x * cell_max_y - 1;
+    int i = 0; // index of particles, 0<i<N;
+    for(int cell_id = 0; cell_id <= max_cell_id; cell_id++){
+        while(i < N && particles[i].cell_id == cell_id){
+            i++;
+        }
+        cell_list_idx[cell_id + 1] = i;
+    } 
+
+}
 
 // Compute collision forces based on Lennard-Jones potential
 DEVICE void compute_collision_force(Particle& p1, Particle& p2, double& fx, double& fy) {
@@ -113,25 +162,39 @@ DEVICE void compute_collision_force(Particle& p1, Particle& p2, double& fx, doub
     fy = f_magnitude * dy / r;
 }
 
-__global__ void collision(Particle *particles){
+__global__ void collision(Particle *particles, int* cell_list_idx){
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if(i >= N)
         return;
 
-    // FIXME: This is a O(N^2) algorithm
-    for(int j = 0; j < N; j++){
-        if(i == j)
-            continue;
-        double fx, fy;
-        compute_collision_force(particles[i], particles[j], fx, fy);
-        particles[i].vx += fx * dt / mass;
-        particles[i].vy += fy * dt / mass;
-    }
+    int cell_id = particles[i].cell_id;
 
+    for(int di = -1; di<=1; di++){
+        for(int dj = -1; dj<=1; dj++){
+            int neighbor_cell_id = cell_id + di * cell_max_y + dj;
+            if(neighbor_cell_id < 0 || neighbor_cell_id >= cell_max_x * cell_max_y)
+                continue;
+            int start_idx = cell_list_idx[neighbor_cell_id];
+            int end_idx = cell_list_idx[neighbor_cell_id + 1];
+            for(int j = start_idx; j < end_idx; j++){
+                if(i == j)
+                    continue;
+                double fx, fy;
+                compute_collision_force(particles[i], particles[j], fx, fy);
+                particles[i].vx += fx * dt / mass;
+                particles[i].vy += fy * dt / mass;
+            }
+        }
+    }
+}
+
+template<typename RNG>
+DEVICE double get_randn(RNG& rand_state, double mean, double std_dev){
+    return curand_normal(rand_state) * std_dev + mean;
 }
 
 template <typename RNG>
-__global__ void apply_forces(Particle *particles, RNG* rand_state){
+__global__ void apply_forces(Particle *particles, RNG* rand_state, double sqrt_dt){
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if(i >= N)
         return;
@@ -144,8 +207,8 @@ __global__ void apply_forces(Particle *particles, RNG* rand_state){
 
     // Apply random force
     RNG local_rand_state = rand_state[i];
-    p.vx += curand_uniform(&local_rand_state);
-    p.vy += curand_uniform(&local_rand_state);
+    p.vx += get_randn(local_rand_state, 0.0, sqrt_dt);
+    p.vy += get_randn(local_rand_state, 0.0, sqrt_dt);
     rand_state[i] = local_rand_state;
 }
 
@@ -172,6 +235,7 @@ __global__ void update_positions(Particle *particles){
 
 
 
+
 int main(){
     const double sqrt_dt = std::sqrt(2.0 * T * GAMMA / mass * dt); // Standard deviation for random force
 
@@ -181,17 +245,34 @@ int main(){
     checkCudaErrors(cudaMalloc((void **)&d_rand_states, N*sizeof(RNG)));
 
 
-    // allocate FB
+    // allocate particles
     Particle *particles;
     checkCudaErrors(cudaMallocManaged((void **)&particles, N * sizeof(Particle)));
 
+    // Allocate cell list indexes
+    int *cell_list_idx;
+    checkCudaErrors(cudaMallocManaged((void **)&cell_list_idx, (N+1) * sizeof(int)));
+
     const int nthreads = 256;
     const int nblocks = (N + nthreads - 1) / nthreads;
-    render_init<<<nblocks, nthreads>>>(d_rand_states);
+    rand_init<<<nblocks, nthreads>>>(d_rand_states);
+    checkCudaErrors(cudaGetLastError());
+    checkCudaErrors(cudaDeviceSynchronize());
+
+    // Initialize particles
+    init_particles<<<nblocks, nthreads>>>(particles, d_rand_states);
+    checkCudaErrors(cudaGetLastError());
+    checkCudaErrors(cudaDeviceSynchronize());
+
+    // output initial positions
+    std::cout << "Initial positions:\n";
+    for (int i=0; i<N; i++) {
+        std::cout << "Particle " << i << ": " << particles[i].x << ", " << particles[i].y << "\n";
+    }
 
     // Set up SFML window
     sf::RenderWindow window(sf::VideoMode(windowWidth, windowHeight), "Brownian Dynamics Simulation");
-    window.setFramerateLimit(60);
+    window.setFramerateLimit(120);
 
     sf::Font font;
     if (!font.loadFromFile("/usr/share/fonts/truetype/ubuntu/Ubuntu-M.ttf")) {
@@ -205,6 +286,14 @@ int main(){
     fpsText.setPosition(10.f, 10.f);
 
     sf::Clock clock;
+
+    // Array of shapes for each particle
+    sf::CircleShape shapes[N];
+    for (int i=0; i<N; i++) {
+        shapes[i].setRadius(RADIUS);
+        shapes[i].setPosition(particles[i].x, particles[i].y);
+        shapes[i].setFillColor(colors[i%4]);
+    }
 
     // Simulation loop
     int iter = 0;
@@ -223,21 +312,34 @@ int main(){
         ss << "Iter: "<< iter<<", FPS: " << fps;
         fpsText.setString(ss.str());
 
+        if(iter % 1 == 0){ //hoombd-blue does it every 9th step
+            rebuild_cell_list(particles, cell_list_idx, nblocks, nthreads);
+        }
+
         // Compute forces
-
-        collision<<<nblocks, nthreads>>>(particles);
-
-        apply_forces<<<nblocks, nthreads>>>(particles, d_rand_states);
+        collision<<<nblocks, nthreads>>>(particles, cell_list_idx);
+        checkCudaErrors(cudaGetLastError());
+        checkCudaErrors(cudaDeviceSynchronize());
+        apply_forces<<<nblocks, nthreads>>>(particles, d_rand_states, sqrt_dt);
+        checkCudaErrors(cudaGetLastError());
+        checkCudaErrors(cudaDeviceSynchronize());
         update_positions<<<nblocks, nthreads>>>(particles);
-        
+        checkCudaErrors(cudaGetLastError());
+        checkCudaErrors(cudaDeviceSynchronize());
+
+
         // Draw particles
         window.clear();
         for (int i=0; i<N; i++) {
             Particle particle = particles[i];
-            window.draw(particle.shape);
+            shapes[i].setPosition(particle.x, particle.y);
+            window.draw(shapes[i]);
         }
         window.draw(fpsText);
         window.display();
     }
     
 }
+
+
+
