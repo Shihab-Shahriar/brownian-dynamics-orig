@@ -6,6 +6,7 @@
 #include <thrust/device_ptr.h>
 #include <thrust/sort.h>
 #include <cuda_runtime.h>
+#include <vector>
 
 #define DEVICE __host__ __device__
 
@@ -34,11 +35,10 @@ const double epsilon = 1.0; // Depth of potential well
 const double sigma = 2 * RADIUS;  // Finite distance at which the inter-particle potential is zero
 const double cutoff_distance = 2.5 * sigma;
 
-const double dt = 0.05; // Time step
-const double T = 36.0; // Temperature
+const double dt = 0.01; // Time step
+const double T = 1.0; // Temperature
 const double GAMMA = 1.0; // Drag coefficient
 const double mass = 1.0; // Mass of particles
-const int steps = 10000; // Number of simulation steps
 
 //Sim Box parameters
 const int windowWidth = 800;
@@ -53,10 +53,15 @@ struct Particle {
     double y = 0;
     double vx = 0;
     double vy = 0;
+    int col = 0;
 
     int cell_id;
 
-    DEVICE Particle(float x, float y, const sf::Color col) : x(x), y(y) 
+    DEVICE Particle(){
+
+    };
+
+    DEVICE Particle(float x, float y) : x(x), y(y) 
     {
 
     }
@@ -93,6 +98,7 @@ __global__ void init_particles(Particle *particles, RNG * rand_state){
         return;
 
     Particle p = particles[i];
+    p.col = i % 4;
     RNG local_rand_state = rand_state[i];
     auto x = curand_uniform(&local_rand_state) * float(windowWidth) - 1.0f;
     auto y = curand_uniform(&local_rand_state) * float(windowHeight) - 1.0f;
@@ -144,22 +150,20 @@ DEVICE void compute_collision_force(Particle& p1, Particle& p2, double& fx, doub
     double dx = p2.x - p1.x;
     double dy = p2.y - p1.y;
     double r2 = dx * dx + dy * dy;
-    if(r2 < .1) { 
-        fx = 0.0;
-        fy = 0.0;
-        return;
-    }
 
     double r = std::sqrt(r2);
+    if(r>= 3* sigma)
+        return;
     
     // Lennard-Jones force magnitude
     double r_inv = sigma / r;
     double r_inv6 = r_inv * r_inv * r_inv * r_inv * r_inv * r_inv;
     double r_inv12 = r_inv6 * r_inv6;
-    double f_magnitude = 4.0 * epsilon * ( r_inv12 - r_inv6) / r;
+    double f_magnitude = 24.0 * epsilon * (2*r_inv12 - r_inv6) / r;
+    //printf("r: %f, f_magnitude: %f\n", r, f_magnitude);
 
-    fx = f_magnitude * dx / r;
-    fy = f_magnitude * dy / r;
+    fx = f_magnitude * (dx / r);
+    fy = f_magnitude * (dy / r);
 }
 
 __global__ void collision(Particle *particles, int* cell_list_idx){
@@ -189,8 +193,9 @@ __global__ void collision(Particle *particles, int* cell_list_idx){
 }
 
 template<typename RNG>
-DEVICE double get_randn(RNG& rand_state, double mean, double std_dev){
-    return curand_normal(rand_state) * std_dev + mean;
+DEVICE double get_randn(RNG* rand_state, double mean, double std_dev){
+    double res = curand_normal(rand_state) * std_dev + mean;
+    return res;
 }
 
 template <typename RNG>
@@ -203,13 +208,13 @@ __global__ void apply_forces(Particle *particles, RNG* rand_state, double sqrt_d
     // Apply drag force
     p.vx -= GAMMA / mass * p.vx * dt;
     p.vy -= GAMMA / mass * p.vy * dt;
-    particles[i] = p;
 
     // Apply random force
     RNG local_rand_state = rand_state[i];
-    p.vx += get_randn(local_rand_state, 0.0, sqrt_dt);
-    p.vy += get_randn(local_rand_state, 0.0, sqrt_dt);
+    p.vx += get_randn(&local_rand_state, 0.0, sqrt_dt);
+    p.vy += get_randn(&local_rand_state, 0.0, sqrt_dt);
     rand_state[i] = local_rand_state;
+    particles[i] = p;
 }
 
 __global__ void update_positions(Particle *particles){
@@ -233,12 +238,53 @@ __global__ void update_positions(Particle *particles){
 
 }
 
+std::tuple<double, double, double, double>
+find_extreme_positions(Particle* particles){
+    double min_x = std::numeric_limits<double>::max();
+    double max_x = std::numeric_limits<double>::min();
+    double min_y = std::numeric_limits<double>::max();
+    double max_y = std::numeric_limits<double>::min();;
+    for(int i=0; i<N; i++){
+        Particle p = particles[i];
+        if(p.x < min_x)
+            min_x = p.x;
+        if(p.x > max_x)
+            max_x = p.x;
+        if(p.y < min_y)
+            min_y = p.y;
+        if(p.y > max_y)
+            max_y = p.y;
+    }
+    return std::make_tuple(min_x, max_x, min_y, max_y);
+}
 
+std::tuple<double, double>
+find_velocity_magn(Particle* particles){
+    double min_v = std::numeric_limits<double>::max();
+    double max_v = std::numeric_limits<double>::min();
+    for(int i=0; i<N; i++){
+        Particle p = particles[i];
+        double v = std::sqrt(p.vx * p.vx + p.vy * p.vy);
+        if(v < min_v)
+            min_v = v;
+        if(v > max_v)
+            max_v = v;
+    }
+    return std::make_tuple(min_v, max_v);
+}
+
+void get_all_velocity_magnitudes(Particle* particles, std::vector<double>& vels){
+    for(int i=0; i<N; i++){
+        Particle p = particles[i];
+        double v = std::sqrt(p.vx * p.vx + p.vy * p.vy);
+        vels[i] = v;
+    }
+}
 
 
 int main(){
     const double sqrt_dt = std::sqrt(2.0 * T * GAMMA / mass * dt); // Standard deviation for random force
-
+    std::cout<< "sqrt_dt: "<<sqrt_dt<<std::endl;
 
     // Random number generator setup
     RNG *d_rand_states;
@@ -265,10 +311,10 @@ int main(){
     checkCudaErrors(cudaDeviceSynchronize());
 
     // output initial positions
-    std::cout << "Initial positions:\n";
-    for (int i=0; i<N; i++) {
-        std::cout << "Particle " << i << ": " << particles[i].x << ", " << particles[i].y << "\n";
-    }
+    // std::cout << "Initial positions:\n";
+    // for (int i=0; i<N; i++) {
+    //     std::cout << "Particle " << i << ": " << particles[i].x << ", " << particles[i].y << "\n";
+    // }
 
     // Set up SFML window
     sf::RenderWindow window(sf::VideoMode(windowWidth, windowHeight), "Brownian Dynamics Simulation");
@@ -292,8 +338,11 @@ int main(){
     for (int i=0; i<N; i++) {
         shapes[i].setRadius(RADIUS);
         shapes[i].setPosition(particles[i].x, particles[i].y);
-        shapes[i].setFillColor(colors[i%4]);
     }
+
+    bool isRunning = true;
+    std::vector<double> vels_prev(N);
+    std::vector<double> vels_curr(N);
 
     // Simulation loop
     int iter = 0;
@@ -302,7 +351,40 @@ int main(){
         sf::Event event;
         while (window.pollEvent(event)) {
             if (event.type == sf::Event::Closed) window.close();
+
+            if (event.type == sf::Event::KeyPressed) {
+                if (event.key.code == sf::Keyboard::Q) {
+                    isRunning = false;
+                    std::cout << "Simulation Paused. Press 'R' to resume." << std::endl;
+
+                    auto [min_x, max_x, min_y, max_y] = find_extreme_positions(particles);
+                    std::cout << min_x<<", "<<max_x<<", "<<min_y<<", "<<max_y<<std::endl;
+
+                    auto [min_v, max_v] = find_velocity_magn(particles);
+                    std::cout << min_v<<", "<<max_v<<std::endl;
+
+                    vels_prev = vels_curr;
+                    get_all_velocity_magnitudes(particles, vels_curr);
+                    //print all force magnitudes in last time step
+                    for(int i=0; i<N; i++){
+                        double force = (vels_curr[i] - vels_prev[i])  / dt;
+                        std::cout<<force<<", ";
+                    }
+                    std::cout<<std::endl;
+
+                } else if (event.key.code == sf::Keyboard::R) {
+                    isRunning = true;
+                    std::cout << "Simulation Resumed." << std::endl;
+                }
+            }
         }
+
+
+        if(!isRunning)
+            continue;
+
+        get_all_velocity_magnitudes(particles, vels_curr);
+
 
         // Measure time elapsed since last frame
         sf::Time elapsed = clock.restart();
@@ -317,12 +399,30 @@ int main(){
         }
 
         // Compute forces
+        vels_prev = vels_curr;
         collision<<<nblocks, nthreads>>>(particles, cell_list_idx);
         checkCudaErrors(cudaGetLastError());
         checkCudaErrors(cudaDeviceSynchronize());
+        printf("Change after Collision:\n");
+        get_all_velocity_magnitudes(particles, vels_curr);
+        for(int i=0; i<N; i++){
+            double force = (vels_curr[i] - vels_prev[i])  / dt;
+            std::cout<<force<<", ";
+        }
+        std::cout<<std::endl;
+
         apply_forces<<<nblocks, nthreads>>>(particles, d_rand_states, sqrt_dt);
         checkCudaErrors(cudaGetLastError());
         checkCudaErrors(cudaDeviceSynchronize());
+        vels_prev = vels_curr;
+        get_all_velocity_magnitudes(particles, vels_curr);
+        printf("Change after Forces:\n");
+        for(int i=0; i<N; i++){
+            double force = (vels_curr[i] - vels_prev[i])  / dt;
+            std::cout<<force<<", ";
+        }
+        std::cout<<std::endl<<std::endl;
+        
         update_positions<<<nblocks, nthreads>>>(particles);
         checkCudaErrors(cudaGetLastError());
         checkCudaErrors(cudaDeviceSynchronize());
@@ -333,6 +433,7 @@ int main(){
         for (int i=0; i<N; i++) {
             Particle particle = particles[i];
             shapes[i].setPosition(particle.x, particle.y);
+            shapes[i].setFillColor(colors[particle.col]);
             window.draw(shapes[i]);
         }
         window.draw(fpsText);

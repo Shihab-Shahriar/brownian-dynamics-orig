@@ -2,7 +2,7 @@
 CXX = nvcc
 
 # Compiler Flags
-CXXFLAGS = -Xcompiler -Wall -O3
+CXXFLAGS = -Xcompiler -Wall -O3 -std=c++17
 
 # SFML include directory
 INCLUDES = 
@@ -29,7 +29,7 @@ all: $(TARGET)
 $(TARGET): $(OBJECTS)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(OBJECTS) -o $(TARGET) $(LIBS) $(LDFLAGS)
 
-%.o: %.cpp
+%.o: %.cu
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
 clean:
