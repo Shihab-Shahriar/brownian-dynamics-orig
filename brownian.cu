@@ -38,7 +38,7 @@ const double dt = 0.01; // Time step
 const double T = 1.0; // Temperature
 const double GAMMA = 1.0; // Drag coefficient
 const double mass = 1.0; // Mass of particles
-const int steps = 10000; // Number of simulation steps
+const int steps = 1000; // Number of simulation steps
 
 //Sim Box parameters
 const int windowWidth = 800;
@@ -128,6 +128,8 @@ void rebuild_cell_list(Particle* particles, int *cell_list_idx, int nblocks, int
 
     thrust::device_ptr<Particle> dev_ptr(particles);
     thrust::sort(dev_ptr, dev_ptr + N, ParticleComparator());
+    checkCudaErrors(cudaGetLastError());
+    checkCudaErrors(cudaDeviceSynchronize());
 
     // Find cell boundaries
     cell_list_idx[0] = 0;
@@ -267,7 +269,7 @@ int main(){
 
     // Simulation loop
     int iter = 0;
-    while(iter++ < steps){
+    while(iter < steps){
         if(iter % 9 == 0){ //hoombd-blue does it every 9th step
             rebuild_cell_list(particles, cell_list_idx, nblocks, nthreads);
         }
@@ -284,6 +286,8 @@ int main(){
         update_positions<<<nblocks, nthreads>>>(particles);
         checkCudaErrors(cudaGetLastError());
         checkCudaErrors(cudaDeviceSynchronize());
+
+        iter++;
     }
 
 }
