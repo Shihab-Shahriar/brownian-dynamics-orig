@@ -153,6 +153,10 @@ DEVICE void compute_collision_force(Particle& p1, Particle& p2, double& fx, doub
     double r = std::sqrt(r2);
     if(r>= 3* sigma)
         return;
+
+    if(r < RADIUS){
+        return;
+    }
     
     // Lennard-Jones force magnitude
     double r_inv = sigma / r;
@@ -163,6 +167,11 @@ DEVICE void compute_collision_force(Particle& p1, Particle& p2, double& fx, doub
 
     fx = f_magnitude * (dx / r);
     fy = f_magnitude * (dy / r);
+
+
+    if (isnan(fx) || isnan(fy)) {
+        printf("Debug Info: fx=%f, fy=%f, r=%f\n", fx, fy, r);
+    }
 }
 
 __global__ void collision(Particle *particles, int* cell_list_idx){
