@@ -2,10 +2,11 @@
 #include <cmath>
 #include <sstream>
 #include <vector>
-#include <curand_kernel.h>
 #include <thrust/device_ptr.h>
 #include <thrust/sort.h>
 #include <cuda_runtime.h>
+
+#include <phillox.h>
 
 #define DEVICE __host__ __device__
 
@@ -22,7 +23,7 @@ void check_cuda(cudaError_t result, char const *const func, const char *const fi
     }
 }
 
-typedef curandStatePhilox4_32_10_t RNG;
+typedef Phillox RNG;
 
 
 // Radius of particles
@@ -80,27 +81,17 @@ struct Particle {
 
 };
 
-__global__ void rand_init(RNG *rand_state) {
-    int i = threadIdx.x + blockIdx.x * blockDim.x;
-    if(i >= N) 
-        return;
 
-    // TODO: Each thread gets different seed, same sequence for
-    // performance improvement of about 2x!
-    curand_init(1984, i, 0, &rand_state[i]);
-}
-
-__global__ void init_particles(Particle *particles, RNG * rand_state){
+__global__ void init_particles(Particle *particles, int counter){
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if(i >= N)
         return;
 
+    RNG rand_state(i, counter);
     Particle p = particles[i];
-    RNG local_rand_state = rand_state[i];
-    auto x = curand_uniform(&local_rand_state) * float(windowWidth) - 1.0f;
-    auto y = curand_uniform(&local_rand_state) * float(windowHeight) - 1.0f;
+    auto x = rand_state.rand() * float(windowWidth) - 1.0f;
+    auto y = rand_state.rand() * float(windowHeight) - 1.0f;
     p.update(x, y);
-    rand_state[i] = local_rand_state;
     particles[i] = p;
 }
 
@@ -189,14 +180,8 @@ __global__ void collision(Particle *particles, int* cell_list_idx){
     }
 }
 
-template<typename RNG>
-DEVICE double get_randn(RNG* rand_state, double mean, double std_dev){
-    double res = curand_normal(rand_state) * std_dev + mean;
-    return res;
-}
 
-template <typename RNG>
-__global__ void apply_forces(Particle *particles, RNG* rand_state, double sqrt_dt){
+__global__ void apply_forces(Particle *particles, int counter, double sqrt_dt){
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if(i >= N)
         return;
@@ -207,10 +192,9 @@ __global__ void apply_forces(Particle *particles, RNG* rand_state, double sqrt_d
     p.vy -= GAMMA / mass * p.vy * dt;
 
     // Apply random force
-    RNG local_rand_state = rand_state[i];
-    p.vx += get_randn(&local_rand_state, 0.0, sqrt_dt);
-    p.vy += get_randn(&local_rand_state, 0.0, sqrt_dt);
-    rand_state[i] = local_rand_state;
+    RNG rng(i, counter);
+    p.vx += rng.randn(0.0, sqrt_dt);
+    p.vy += rng.randn(0.0, sqrt_dt);
     particles[i] = p;
 }
 
@@ -240,10 +224,6 @@ __global__ void update_positions(Particle *particles){
 int main(){
     const double sqrt_dt = std::sqrt(2.0 * T * GAMMA / mass * dt); // Standard deviation for random force
 
-    // Random number generator setup
-    RNG *d_rand_states;
-    checkCudaErrors(cudaMalloc((void **)&d_rand_states, N*sizeof(RNG)));
-
 
     // allocate particles
     Particle *particles;
@@ -255,19 +235,16 @@ int main(){
 
     const int nthreads = 256;
     const int nblocks = (N + nthreads - 1) / nthreads;
-    rand_init<<<nblocks, nthreads>>>(d_rand_states);
-    checkCudaErrors(cudaGetLastError());
-    checkCudaErrors(cudaDeviceSynchronize());
 
     // Initialize particles
-    init_particles<<<nblocks, nthreads>>>(particles, d_rand_states);
+    init_particles<<<nblocks, nthreads>>>(particles, 0);
     checkCudaErrors(cudaGetLastError());
     checkCudaErrors(cudaDeviceSynchronize());
 
 
     // Simulation loop
     int iter = 0;
-    while(iter++ < steps){
+    while(iter < steps){
         if(iter % 9 == 0){ //hoombd-blue does it every 9th step
             rebuild_cell_list(particles, cell_list_idx, nblocks, nthreads);
         }
@@ -277,13 +254,15 @@ int main(){
         checkCudaErrors(cudaGetLastError());
         checkCudaErrors(cudaDeviceSynchronize());
 
-        apply_forces<<<nblocks, nthreads>>>(particles, d_rand_states, sqrt_dt);
+        apply_forces<<<nblocks, nthreads>>>(particles, iter+1, sqrt_dt);
         checkCudaErrors(cudaGetLastError());
         checkCudaErrors(cudaDeviceSynchronize());
         
         update_positions<<<nblocks, nthreads>>>(particles);
         checkCudaErrors(cudaGetLastError());
         checkCudaErrors(cudaDeviceSynchronize());
+
+        iter++;
     }
 
 }
