@@ -34,8 +34,10 @@ const double epsilon = 1.0; // Depth of potential well
 const double sigma = 2 * RADIUS;  // Finite distance at which the inter-particle potential is zero
 const double cutoff_distance = 2.5 * sigma;
 
+// NOTE: The combined effect of T, Force cap and how often we rebuild cell list pretty 
+// significantly affects the visual 'beauty' of the simulation.
 const double dt = 0.01; // Time step
-const double T = 1.0; // Temperature
+const double T = 9.0; // Temperature
 const double GAMMA = 1.0; // Drag coefficient
 const double mass = 1.0; // Mass of particles
 const int steps = 1000; // Number of simulation steps
@@ -52,6 +54,8 @@ struct Particle {
     double y = 0;
     double vx = 0;
     double vy = 0;
+    double fx = 0;
+    double fy = 0;
 
     int cell_id;
 
@@ -145,18 +149,17 @@ void rebuild_cell_list(Particle* particles, int *cell_list_idx, int nblocks, int
 }
 
 // Compute collision forces based on Lennard-Jones potential
-DEVICE void compute_collision_force(Particle& p1, Particle& p2, double& fx, double& fy) {
+DEVICE void compute_collision_force(Particle& p1, Particle& p2) {
     double dx = p2.x - p1.x;
     double dy = p2.y - p1.y;
     double r2 = dx * dx + dy * dy;
 
     double r = std::sqrt(r2);
-    if(r>= 3* sigma)
+    if(r >= 3* sigma)
         return;
 
-    if(r < RADIUS){
-        return;
-    }
+    if(r < 0.0001)
+        r = 0.0001; // avoid division by zero
     
     // Lennard-Jones force magnitude
     double r_inv = sigma / r;
@@ -165,12 +168,18 @@ DEVICE void compute_collision_force(Particle& p1, Particle& p2, double& fx, doub
     double f_magnitude = 24.0 * epsilon * (2*r_inv12 - r_inv6) / r;
     //printf("r: %f, f_magnitude: %f\n", r, f_magnitude);
 
-    fx = f_magnitude * (dx / r);
-    fy = f_magnitude * (dy / r);
+    // cap f_magnitude. 
+    // Too large values has obvious problems. Too little sucks the life out of sim :)
+    if(f_magnitude > 5000)
+        f_magnitude = 5000;
+    else if(f_magnitude < -5000)
+        f_magnitude = -5000;
 
+    p1.fx += f_magnitude * (dx / r);
+    p1.fy += f_magnitude * (dy / r);
 
-    if (isnan(fx) || isnan(fy)) {
-        printf("Debug Info: fx=%f, fy=%f, r=%f\n", fx, fy, r);
+    if (isnan(p1.fx) || isnan(p1.fy)) {
+        printf("Debug Info: fx=%f, fy=%f, r=%f\n", p1.fx, p1.fy, r);
     }
 }
 
@@ -191,10 +200,8 @@ __global__ void collision(Particle *particles, int* cell_list_idx){
             for(int j = start_idx; j < end_idx; j++){
                 if(i == j)
                     continue;
-                double fx, fy;
-                compute_collision_force(particles[i], particles[j], fx, fy);
-                particles[i].vx += fx * dt / mass;
-                particles[i].vy += fy * dt / mass;
+                compute_collision_force(particles[i], particles[j]);
+
             }
         }
     }
@@ -213,16 +220,43 @@ __global__ void apply_forces(Particle *particles, RNG* rand_state, double sqrt_d
         return;
 
     Particle p = particles[i];
+    
     // Apply drag force
-    p.vx -= GAMMA / mass * p.vx * dt;
-    p.vy -= GAMMA / mass * p.vy * dt;
+    p.fx -= GAMMA * p.vx ;
+    p.fy -= GAMMA * p.vy ;
 
     // Apply random force
     RNG local_rand_state = rand_state[i];
-    p.vx += get_randn(&local_rand_state, 0.0, sqrt_dt);
-    p.vy += get_randn(&local_rand_state, 0.0, sqrt_dt);
+    p.fx += get_randn(&local_rand_state, 0.0, sqrt_dt);
+    p.fx += get_randn(&local_rand_state, 0.0, sqrt_dt);
+    
     rand_state[i] = local_rand_state;
     particles[i] = p;
+}
+
+__global__ void update(Particle *particles, bool first_half){
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if(i >= N)
+        return;
+        
+    Particle p = particles[i];
+
+    p.vx += (p.fx / mass) * dt * .5;
+    p.vy += (p.fy / mass) * dt * .5;
+
+    // Check for collisions with box boundaries
+    if (p.x - RADIUS < 0 || p.x + RADIUS > windowWidth) {
+        p.vx *= -1;
+    }
+    if (p.y - RADIUS < 0 || p.y + RADIUS > windowHeight) {
+        p.vy *= -1;
+    }
+    // only update position if it is the first half of the velocity verlet
+    if(first_half)
+        p.update(p.vx * dt, p.vy * dt);
+
+    particles[i] = p;
+
 }
 
 __global__ void update_positions(Particle *particles){
@@ -249,7 +283,7 @@ __global__ void update_positions(Particle *particles){
 
 
 int main(){
-    const double sqrt_dt = std::sqrt(2.0 * T * GAMMA / mass * dt); // Standard deviation for random force
+    const double sqrt_dt = std::sqrt(2.0 * T * GAMMA / mass); // Standard deviation for random force
 
     // Random number generator setup
     RNG *d_rand_states;
@@ -279,11 +313,15 @@ int main(){
     // Simulation loop
     int iter = 0;
     while(iter < steps){
-        if(iter % 9 == 0){ //hoombd-blue does it every 9th step
+        if(iter % 5 == 0){ //hoombd-blue does it every 9th step
             rebuild_cell_list(particles, cell_list_idx, nblocks, nthreads);
         }
 
-        // Compute forces
+        // velcotiy verlet
+        update<<<nblocks, nthreads>>>(particles, true);
+        checkCudaErrors(cudaGetLastError());
+        checkCudaErrors(cudaDeviceSynchronize());
+
         collision<<<nblocks, nthreads>>>(particles, cell_list_idx);
         checkCudaErrors(cudaGetLastError());
         checkCudaErrors(cudaDeviceSynchronize());
@@ -292,7 +330,7 @@ int main(){
         checkCudaErrors(cudaGetLastError());
         checkCudaErrors(cudaDeviceSynchronize());
         
-        update_positions<<<nblocks, nthreads>>>(particles);
+        update<<<nblocks, nthreads>>>(particles, false);
         checkCudaErrors(cudaGetLastError());
         checkCudaErrors(cudaDeviceSynchronize());
 
