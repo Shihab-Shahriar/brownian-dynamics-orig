@@ -4,12 +4,12 @@ cmake_minimum_required(VERSION 3.23)
 # Project's name
 project(brown CXX CUDA)
 
-set(ARCH "sm_70" CACHE STRING "GPU architecture to compile for")
+set(ARCH "sm_80" CACHE STRING "GPU architecture to compile for")
 
 # Set the C++ standard
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CUDA_STANDARD 17)
-set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -arch=${ARCH} -Xcompiler -Wall,-Wextra,-Wpedantic,-Werror")
+set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -arch=${ARCH} -Xcompiler -Wall,-Wextra,-Werror")
 
 include(FetchContent)
 
