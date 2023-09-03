@@ -44,6 +44,7 @@ struct Particle {
     double vx = 0;
     double vy = 0;
 
+    int pid = 0;
 
     DEVICE Particle(float x, float y) : x(x), y(y) 
     {
@@ -82,6 +83,8 @@ __global__ void init_particles(Particle *particles, RNG * rand_state){
         return;
 
     Particle p = particles[i];
+    p.pid = i;
+
     RNG local_rand_state = rand_state[i];
     auto x = curand_uniform(&local_rand_state) * float(windowWidth) - 1.0f;
     auto y = curand_uniform(&local_rand_state) * float(windowHeight) - 1.0f;
