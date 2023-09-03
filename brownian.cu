@@ -26,18 +26,17 @@ typedef curandStatePhilox4_32_10_t RNG;
 
 // Radius of particles
 const double RADIUS = 1.0;
-const int N = 2000; // Number of particles
+const int N = 100000; // Number of particles
 const double dt = 0.05; // Time step
 const double T = 64.0; // Temperature
 const double GAMMA = 1.0; // Drag coefficient
 const double mass = 1.0; // Mass of particles
-//const int steps = 10000; // Number of simulation steps
+const int STEPS = 10000; // Number of simulation steps
 
 //Sim Box parameters
 const int windowWidth = 800;
 const int windowHeight = 600;
 
-const sf::Color colors[4] = {sf::Color::Green, sf::Color::Red, sf::Color::Blue, sf::Color::Yellow};
 
 struct Particle {
     double x = 0;
@@ -45,9 +44,8 @@ struct Particle {
     double vx = 0;
     double vy = 0;
 
-    int cell_id;
 
-    DEVICE Particle(float x, float y, const sf::Color col) : x(x), y(y) 
+    DEVICE Particle(float x, float y) : x(x), y(y) 
     {
 
     }
@@ -165,71 +163,17 @@ int main(){
     checkCudaErrors(cudaGetLastError());
     checkCudaErrors(cudaDeviceSynchronize());
 
-    // output initial positions
-    // std::cout << "Initial positions:\n";
-    // for (int i=0; i<N; i++) {
-    //     std::cout << "Particle " << i << ": " << particles[i].x << ", " << particles[i].y << "\n";
-    // }
-
-    // Set up SFML window
-    sf::RenderWindow window(sf::VideoMode(windowWidth, windowHeight), "Brownian Dynamics Simulation");
-    window.setFramerateLimit(120);
-
-    sf::Font font;
-    if (!font.loadFromFile("/usr/share/fonts/truetype/ubuntu/Ubuntu-M.ttf")) {
-        // handle error
-    }
-
-    sf::Text fpsText;
-    fpsText.setFont(font);
-    fpsText.setCharacterSize(24); // in pixels
-    fpsText.setFillColor(sf::Color::White);
-    fpsText.setPosition(10.f, 10.f);
-
-    sf::Clock clock;
-
-    // Array of shapes for each particle
-    sf::CircleShape shapes[N];
-    for (int i=0; i<N; i++) {
-        shapes[i].setRadius(2*RADIUS);  // increasing RADIUS for just visualization purpose
-        shapes[i].setPosition(particles[i].x, particles[i].y);
-        shapes[i].setFillColor(colors[i%4]);
-    }
 
     // Simulation loop
     int iter = 0;
-    while (window.isOpen()) {
-        iter++;
-        sf::Event event;
-        while (window.pollEvent(event)) {
-            if (event.type == sf::Event::Closed) window.close();
-        }
-
-        // Measure time elapsed since last frame
-        sf::Time elapsed = clock.restart();
-        float fps = 1.f / elapsed.asSeconds();
-        // Update FPS text
-        std::stringstream ss;
-        ss << "Iter: "<< iter<<", FPS: " << fps;
-        fpsText.setString(ss.str());
-
+    while (iter++ < STEPS) {
         apply_forces<<<nblocks, nthreads>>>(particles, d_rand_states, sqrt_dt);
         checkCudaErrors(cudaGetLastError());
         checkCudaErrors(cudaDeviceSynchronize());
+
         update_positions<<<nblocks, nthreads>>>(particles);
         checkCudaErrors(cudaGetLastError());
         checkCudaErrors(cudaDeviceSynchronize());
-
-
-        // Draw particles
-        window.clear();
-        for (int i=0; i<N; i++) {
-            Particle particle = particles[i];
-            shapes[i].setPosition(particle.x, particle.y);
-            window.draw(shapes[i]);
-        }
-        window.draw(fpsText);
-        window.display();
     }
     
 }
