@@ -2,14 +2,15 @@
 CXX = nvcc 
 
 # Compiler Flags
-CXXFLAGS = -Xcompiler -Wall -O3 -std=c++17
+CXXFLAGS = -Xcompiler -Wall -O3 -std=c++17 -arch=sm_70
 
 INCLUDES = 
 
 LIBS = 
 
 # SFML Linker Flags
-LDFLAGS = -lsfml-graphics -lsfml-window -lsfml-system
+LDFLAGS = 
+#-lsfml-graphics -lsfml-window -lsfml-system
 
 # Executable name
 TARGET = appl

@@ -26,7 +26,7 @@ typedef curandStatePhilox4_32_10_t RNG;
 
 // Radius of particles
 const double RADIUS = 1.0;
-const int N = 100000; // Number of particles
+const int N = 1000000; // Number of particles
 const double dt = 0.05; // Time step
 const double T = 64.0; // Temperature
 const double GAMMA = 1.0; // Drag coefficient
