@@ -2,8 +2,8 @@
 #include <cmath>
 #include <sstream>
 #include <vector>
-#include <curand_kernel.h>
 #include <cuda_runtime.h>
+#include <phillox.h>
 
 #define DEVICE __host__ __device__
 
@@ -22,7 +22,7 @@ void check_cuda(cudaError_t result, char const *const func, const char *const fi
     }
 }
 
-typedef curandStatePhilox4_32_10_t RNG;
+typedef Phillox RNG;
 
 // Radius of particles
 const double RADIUS = 1.0;
