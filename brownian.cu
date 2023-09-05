@@ -77,12 +77,12 @@ __global__ void init_particles(Particle *particles){
     p.pid = i;
 
     RNG local_rand_state(p.pid, 0);
-    auto x = local_rand_state.rand() * double(windowWidth) - 1.0;
-    auto y = local_rand_state.rand() * double(windowHeight) - 1.0;
+    auto x = local_rand_state.rand<double>() * double(windowWidth) - 1.0;
+    auto y = local_rand_state.rand<double>() * double(windowHeight) - 1.0;
     p.update(x, y);
 
-    p.vx = local_rand_state.rand() * 100. - 50.0;
-    p.vy = local_rand_state.rand() * 100. - 50.0;
+    p.vx = local_rand_state.rand<double>() * 100. - 50.0;
+    p.vy = local_rand_state.rand<double>() * 100. - 50.0;
 
     particles[i] = p;
 }
