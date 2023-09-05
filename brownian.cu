@@ -25,12 +25,12 @@ void check_cuda(cudaError_t result, char const *const func, const char *const fi
 typedef curandStatePhilox4_32_10_t RNG;
 
 // Radius of particles
-const float RADIUS = 1.0;
+const double RADIUS = 1.0;
 const int N = 1000000; // Number of particles
-const float dt = 0.05; // Time step
-const float T = 64.0; // Temperature
-const float GAMMA = 1.0; // Drag coefficient
-const float mass = 1.0; // Mass of particles
+const double dt = 0.05; // Time step
+const double T = 64.0; // Temperature
+const double GAMMA = 1.0; // Drag coefficient
+const double mass = 1.0; // Mass of particles
 const int STEPS = 10000; // Number of simulation steps
 
 //Sim Box parameters
@@ -39,19 +39,19 @@ const int windowHeight = 600;
 
 
 struct Particle {
-    float x = 0;
-    float y = 0;
-    float vx = 0;
-    float vy = 0;
+    double x = 0;
+    double y = 0;
+    double vx = 0;
+    double vy = 0;
 
     int pid = 0;
 
-    DEVICE Particle(float x, float y) : x(x), y(y) 
+    DEVICE Particle(double x, double y) : x(x), y(y) 
     {
 
     }
 
-    DEVICE void update(float dx, float dy) {
+    DEVICE void update(double dx, double dy) {
         x += dx; 
         if(x < 0)
             x = 0;
@@ -86,12 +86,13 @@ __global__ void init_particles(Particle *particles, RNG * rand_state){
     p.pid = i;
 
     RNG local_rand_state = rand_state[i];
-    auto x = curand_uniform(&local_rand_state) * float(windowWidth) - 1.0f;
-    auto y = curand_uniform(&local_rand_state) * float(windowHeight) - 1.0f;
+
+    auto x = curand_uniform(&local_rand_state) * double(windowWidth) - 1.0;
+    auto y = curand_uniform(&local_rand_state) * double(windowHeight) - 1.0;
     p.update(x, y);
 
-    p.vx = curand_uniform(&local_rand_state) * 100 - 50.0f;
-    p.vy = curand_uniform(&local_rand_state) * 100 - 50.0f;
+    p.vx = curand_uniform(&local_rand_state) * 100 - 50.0;
+    p.vy = curand_uniform(&local_rand_state) * 100 - 50.0;
 
     rand_state[i] = local_rand_state;
     particles[i] = p;
@@ -99,7 +100,7 @@ __global__ void init_particles(Particle *particles, RNG * rand_state){
 
 
 template <typename RNG>
-__global__ void apply_forces(Particle *particles, RNG* rand_state, float sqrt_dt){
+__global__ void apply_forces(Particle *particles, RNG* rand_state, double sqrt_dt){
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if(i >= N)
         return;
@@ -111,8 +112,9 @@ __global__ void apply_forces(Particle *particles, RNG* rand_state, float sqrt_dt
 
     // Apply random force
     RNG local_rand_state = rand_state[i];
-    p.vx += (curand_uniform(&local_rand_state)  * 2.0f - 1.0f) * sqrt_dt;
-    p.vy += (curand_uniform(&local_rand_state)  * 2.0f - 1.0f) * sqrt_dt;
+    double2 r = curand_uniform2_double(&local_rand_state); 
+    p.vx += (r.x  * 2.0 - 1.0) * sqrt_dt;
+    p.vy += (r.y  * 2.0 - 1.0) * sqrt_dt;
     rand_state[i] = local_rand_state;
     particles[i] = p;
 
@@ -141,10 +143,10 @@ __global__ void update_positions(Particle *particles){
 
 
 int main(){
-    const float sqrt_dt = std::sqrt(2.0 * T * GAMMA / mass * dt); // Standard deviation for random force
+    const double sqrt_dt = std::sqrt(2.0 * T * GAMMA / mass * dt); // Standard deviation for random force
     std::cout << "sqrt_dt: " << sqrt_dt << "\n";
 
-    const float density = (N * PI * RADIUS* RADIUS) / (windowWidth * windowHeight);
+    const double density = (N * PI * RADIUS* RADIUS) / (windowWidth * windowHeight);
     std::cout << "density: " << density << "\n";
 
     // Random number generator setup
