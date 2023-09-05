@@ -6,8 +6,8 @@
 #include <phillox.h>
 
 #define FUNCTION_MACRO __host__ __device__
-
 #define PI           3.14159265358979323846 
+#define SCALAR      double
 
 // limited version of checkCudaErrors from helper_cuda.h in CUDA examples
 #define checkCudaErrors(val) check_cuda( (val), #val, __FILE__, __LINE__ )
@@ -46,12 +46,12 @@ struct Particle {
 
     int pid = 0;
 
-    FUNCTION_MACRO Particle(float x, float y) : x(x), y(y) 
+    FUNCTION_MACRO Particle(double x, double y) : x(x), y(y) 
     {
 
     }
 
-    FUNCTION_MACRO void update(float dx, float dy) {
+    FUNCTION_MACRO void update(double dx, double dy) {
         x += dx; 
         if(x < 0)
             x = 0;
@@ -77,12 +77,12 @@ __global__ void init_particles(Particle *particles){
     p.pid = i;
 
     RNG local_rand_state(p.pid, 0);
-    auto x = local_rand_state.rand() * float(windowWidth) - 1.0f;
-    auto y = local_rand_state.rand() * float(windowHeight) - 1.0f;
+    auto x = local_rand_state.rand() * double(windowWidth) - 1.0;
+    auto y = local_rand_state.rand() * double(windowHeight) - 1.0;
     p.update(x, y);
 
-    p.vx = local_rand_state.rand() * 100 - 50.0f;
-    p.vy = local_rand_state.rand() * 100 - 50.0f;
+    p.vx = local_rand_state.rand() * 100. - 50.0;
+    p.vy = local_rand_state.rand() * 100. - 50.0;
 
     particles[i] = p;
 }
@@ -100,8 +100,8 @@ __global__ void apply_forces(Particle *particles, double sqrt_dt, int counter){
 
     // Apply random force
     RNG local_rand_state(p.pid, counter);
-    p.vx += (local_rand_state.rand()  * 2 - 1.0f) * sqrt_dt;
-    p.vy += (local_rand_state.rand()  * 2 - 1.0f) * sqrt_dt;
+    p.vx += (local_rand_state.rand<double>()  * 2.0 - 1.0) * sqrt_dt;
+    p.vy += (local_rand_state.rand<double>()  * 2.0 - 1.0) * sqrt_dt;
     particles[i] = p;
 
 }
