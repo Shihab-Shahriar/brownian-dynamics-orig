@@ -1,35 +1,45 @@
-# Compiler
-CXX = nvcc 
+# You need to have hip, rocRAND, and compilers installed.
+# PLEASE REPLACE PATHS BELOW WITH YOUR OWN PATHS
+# Do this before running the executable:
+# export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/mnt/ufs18/home-158/khanmd/hippy/clr/build/install/lib
 
-# Compiler Flags
-CXXFLAGS = -Xcompiler -Wall -O3 -std=c++17 -arch=sm_70
+HOST_COMPILER  = g++
+NVCC           = /mnt/ufs18/home-158/khanmd/hippy/HIPCC/bin/hipcc -ccbin $(HOST_COMPILER)
 
-INCLUDES = 
+#NVCC_DBG       = -g -G
+NVCC_DBG       =
 
-LIBS = 
+NVCCFLAGS      = $(NVCC_DBG) 
+GENCODE_FLAGS  = -arch=sm_80 
+#-gencode arch=compute_70,code=sm_70 -gencode arch=compute_75,code=sm_75
 
-# SFML Linker Flags
+SRCS = brownian.cpp
+INCS = 
+INCLUDE_PATH = -I/mnt/ufs18/home-158/khanmd/hippy/clr/build/install/include
+LIBS = -L/mnt/ufs18/home-158/khanmd/hippy/clr/build/install/lib
 LDFLAGS = 
-#-lsfml-graphics -lsfml-window -lsfml-system
 
-# Executable name
-TARGET = appl
+brown: brown.o $(INCS)
+	$(NVCC) $(NVCCFLAGS) $(GENCODE_FLAGS) -o brown brown.o $(LIBS) $(LDFLAGS)
 
-
-# Source files
-SOURCES = brownian.cu
-
-# Object files
-OBJECTS = $(SOURCES:.cu=.o)
-
-all: $(TARGET)
+brown.o: $(SRCS) $(INCS)
+	$(NVCC) $(NVCCFLAGS) $(GENCODE_FLAGS) $(INCLUDE_PATH) -o brown.o -c brownian.cpp 
 
 
-$(TARGET): $(OBJECTS)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) $(OBJECTS) -o $(TARGET) $(LDFLAGS)
+out.ppm: brown
+	rm -f out.ppm
+	./brown > out.ppm
 
-%.o: %.cu
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+out.jpg: out.ppm
+	rm -f out.jpg
+	ppmtojpeg out.ppm > out.jpg
+
+profile_basic: brown
+	nvprof ./brown > out.ppm
+
+# use nvprof --query-metrics
+profile_metrics: brown
+	nvprof --metrics achieved_occupancy,inst_executed,inst_fp_32,inst_fp_64,inst_integer ./brown > out.ppm
 
 clean:
-	rm -f $(OBJECTS) $(TARGET) out.txt a.out
+	rm -f brown brown.o out.ppm out.jpg out.txt
