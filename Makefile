@@ -15,7 +15,7 @@ NVCC           = $(ROOT_PATH)/hippy/HIPCC/bin/hipcc -ccbin $(HOST_COMPILER)
 NVCC_DBG       =
 
 NVCCFLAGS      = $(NVCC_DBG) 
-GENCODE_FLAGS  = -arch=sm_80 
+GENCODE_FLAGS  = -arch=sm_70 
 #-gencode arch=compute_70,code=sm_70 -gencode arch=compute_75,code=sm_75
 
 
