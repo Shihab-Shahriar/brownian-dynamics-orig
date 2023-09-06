@@ -178,4 +178,12 @@ int main() {
         checkHipErrors(hipGetLastError());
         checkHipErrors(hipDeviceSynchronize());
     }
+
+    // just avoid compiler optimization
+    for(int i=0; i<N; i+= 1000){
+        std::cout << int(particles[i].x) << " " << int(particles[i].y) << "\n";
+    }
+
+    checkHipErrors(hipFree(particles));
+    return 0;
 }
