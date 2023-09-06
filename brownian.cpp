@@ -4,9 +4,7 @@
 #include <vector>
 
 #include <hip/hip_runtime.h>
-#include <rocrand/rocrand.hpp>
-#include <rocrand/rocrand.h>
-#include <rocrand/rocrand_kernel.h>
+#include <phillox.h>
 
 
 #define FUNCTION_MACRO __host__ __device__
@@ -26,7 +24,7 @@ void check_hip(hipError_t result, char const *const func, const char *const file
     }
 }
 
-typedef rocrand_state_philox4x32_10 RNG; // HIP random number generator type
+typedef Phillox RNG; // HIP random number generator type
 
 const double RADIUS = 1.0;
 const int N = 1000000;
@@ -65,39 +63,30 @@ struct Particle {
     }
 };
 
-__global__ void rand_init(RNG *rand_state) {
-    int i = threadIdx.x + blockIdx.x * blockDim.x;
-    if(i >= N) 
+
+__global__ void init_particles(Particle *particles){
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if(i >= N)
         return;
-
-    // TODO: Each thread gets different seed, same sequence for
-    // performance improvement of about 2x!
-    rocrand_init(1984, i, 0, &rand_state[i]);
-}
-
-__global__ void init_particles(Particle *particles, RNG * rand_state) {
-    int i = hipBlockIdx_x * hipBlockDim_x + hipThreadIdx_x;
-    if(i >= N) return;
 
     Particle p = particles[i];
     p.pid = i;
 
-    RNG local_rand_state = rand_state[i];
-
-    auto x = rocrand_uniform_double(&local_rand_state) * double(windowWidth) - 1.0;
-    auto y = rocrand_uniform_double(&local_rand_state) * double(windowHeight) - 1.0;
+    RNG local_rand_state(p.pid, 0);
+    auto x = local_rand_state.rand<double>() * double(windowWidth) - 1.0;
+    auto y = local_rand_state.rand<double>() * double(windowHeight) - 1.0;
     p.update(x, y);
 
-    p.vx = rocrand_uniform_double(&local_rand_state) * 100. - 50.0;
-    p.vy = rocrand_uniform_double(&local_rand_state) * 100. - 50.0;
+    p.vx = local_rand_state.rand<double>() * 100. - 50.0;
+    p.vy = local_rand_state.rand<double>() * 100. - 50.0;
 
-    rand_state[i] = local_rand_state;
     particles[i] = p;
 }
 
-__global__ void apply_forces(Particle *particles, RNG * rand_state, double sqrt_dt, int counter) {
-    int i = hipBlockIdx_x * hipBlockDim_x + hipThreadIdx_x;
-    if(i >= N) return;
+__global__ void apply_forces(Particle *particles, double sqrt_dt, int counter){
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if(i >= N)
+        return;
 
     Particle p = particles[i];
     // Apply drag force
@@ -105,13 +94,11 @@ __global__ void apply_forces(Particle *particles, RNG * rand_state, double sqrt_
     p.vy -= GAMMA / mass * p.vy * dt;
 
     // Apply random force
-    RNG local_rand_state = rand_state[i];
-    
-    p.vx += (rocrand_uniform_double(&local_rand_state)  * 2.0 - 1.0) * sqrt_dt;
-    p.vy += (rocrand_uniform_double(&local_rand_state) * 2.0 - 1.0) * sqrt_dt;
-    
-    rand_state[i] = local_rand_state;
+    RNG local_rand_state(p.pid, counter);
+    p.vx += (local_rand_state.rand<double>()  * 2.0 - 1.0) * sqrt_dt;
+    p.vy += (local_rand_state.rand<double>()  * 2.0 - 1.0) * sqrt_dt;
     particles[i] = p;
+
 }
 
 __global__ void update_positions(Particle *particles) {
@@ -140,25 +127,21 @@ int main() {
     const double density = (N * PI * RADIUS* RADIUS) / (windowWidth * windowHeight);
     std::cout << "density: " << density << "\n";
 
-    RNG *d_rand_states;
-    checkHipErrors(hipMalloc((void **)&d_rand_states, N*sizeof(RNG)));
 
     Particle *particles;
     checkHipErrors(hipMallocManaged((void **)&particles, N * sizeof(Particle)));
 
     const int nthreads = 256;
     const int nblocks = (N + nthreads - 1) / nthreads;
-    hipLaunchKernelGGL(rand_init, dim3(nblocks), dim3(nthreads), 0, 0, d_rand_states);
-    checkHipErrors(hipGetLastError());
-    checkHipErrors(hipDeviceSynchronize());
 
-    hipLaunchKernelGGL(init_particles, dim3(nblocks), dim3(nthreads), 0, 0, particles, d_rand_states);
+
+    hipLaunchKernelGGL(init_particles, dim3(nblocks), dim3(nthreads), 0, 0, particles);
     checkHipErrors(hipGetLastError());
     checkHipErrors(hipDeviceSynchronize());
 
     int iter = 0;
     while (iter++ < STEPS) {
-        hipLaunchKernelGGL(apply_forces, dim3(nblocks), dim3(nthreads), 0, 0, particles, d_rand_states, sqrt_dt, iter);
+        hipLaunchKernelGGL(apply_forces, dim3(nblocks), dim3(nthreads), 0, 0, particles, sqrt_dt, iter);
         checkHipErrors(hipGetLastError());
         checkHipErrors(hipDeviceSynchronize());
 
